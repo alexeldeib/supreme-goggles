@@ -127,4 +127,8 @@ The e2e flow guarantees:
 - server CSR only receive approval when requested by a cert matching the requested certificate
 - kubelet credentials can never expire in a meaningful way while the control plane is up.
 
+Note that using an exec plugin to request a bootstrap token, the only requirements are cluster fqdn and certificate authority. 
+
+The fqdn can be injected via e.g. VMSS tags to IMDS in Azure, while the certificate authority can be in custom data or user data (later also accessible via IMDS). This eliminates the need for any other external data for bootstrap.
+
 Note there is a built-in RBAC role for the kubelet-serving approver, even though the approver itself is not built-in (only the signer): system:certificates.k8s.io:kubelet-serving-approver
