@@ -9,6 +9,33 @@ For why you'd want this, see documentation here:
 
 Client certificates for kubelet have a fully automated controller, but serving certs do not.
 
+## Running
+
+Currently there's only a basic binary build and no container image or Kubernetes manifests. If you've done this thing before, feel free to send a pull request.
+
+There are also no tests. We could use some!
+
+We currently use bazel for builds. 
+
+Simple build
+```sh
+bazel build supreme-goggles
+```
+
+Update dependencies after development
+```sh
+go mod tidy
+bazel run gazelle # generate build files
+bazel run gazelle-update-repos # generate repository rules for go deps
+bazel run gazelle # regenerate build files due to any repository rule changes
+```
+
+Running the operator is as simple as having a kubeconfig defined locally
+```sh
+bazel run supreme-goggles # run via bazel
+# or build and execute directly
+bazel build supreme-goggles
+./bazel-bin/supreme-goggles_/supreme-goggles
 ## Requirements
 
 Copied largely from [here](https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/#client-and-serving-certificates).
