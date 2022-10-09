@@ -1,0 +1,24 @@
+Certificate Request:
+    Data:
+        Version: 1 (0x0)
+        Subject: O = system:nodes, CN = system:node:aks-nodepool6-28507690-vmss000000
+        Subject Public Key Info:
+            Public Key Algorithm: id-ecPublicKey
+                Public-Key: (256 bit)
+                pub:
+                    04:84:a0:f6:da:17:cf:63:b8:e5:39:1d:4b:31:08:
+                    9e:46:7e:4e:c6:e0:18:1c:ce:c8:ac:de:21:f8:01:
+                    83:b7:f6:fc:04:62:20:23:56:f9:55:b4:bd:4d:44:
+                    22:52:e0:c4:be:a3:19:f6:ce:e5:d1:21:b8:51:a2:
+                    e7:5b:73:b8:bf
+                ASN1 OID: prime256v1
+                NIST CURVE: P-256
+        Attributes:
+            (none)
+            Requested Extensions:
+    Signature Algorithm: ecdsa-with-SHA256
+    Signature Value:
+        30:46:02:21:00:85:22:3e:4e:46:15:87:26:54:9c:cb:14:d6:
+        a2:cf:11:54:18:a6:78:70:a6:72:49:6f:f9:e9:97:45:fe:0d:
+        92:02:21:00:dd:a2:03:79:51:69:34:a1:70:04:90:5b:b7:7f:
+        67:95:16:33:62:df:87:f6:42:28:ec:f0:44:8a:62:1c:95:ab
