@@ -11,6 +11,10 @@ Client certificates for kubelet have a fully automated controller, but serving c
 
 ## Running
 
+This requires kubelet to run with `--rotate-server-certificates=true`, (currently not set on AKS, for example).
+
+Setting this and restarting kubelet is relatively non disruptive -- you can even delete the serving cert entirely with minimal disruption. Test this in your environment before relying on it in production!
+
 Currently there's only a basic binary build and no container image or Kubernetes manifests. If you've done this thing before, feel free to send a pull request.
 
 There are also no tests. We could use some!
