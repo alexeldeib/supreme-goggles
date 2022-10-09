@@ -94,6 +94,7 @@ is out of scope here but useful.
   - https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/certificates/signer/signer.go
 - Kubelet sees approved cert, requests and receives it. Bootstrap token has GET/LIST CSR 
   - (actually on all CSR, that is an issue, it can read other nodes CSR even with NodeRestriction because NodeRestriction uses system:nodes and doesn't limit CSR for bootstrapping? from Ace's glance at source code)
+  - Single item RBAC may help work around this, but would require incredibly tedious, dynamically generated RBAC rules at scale vs a single good webhook.
   - https://github.com/kubernetes/kubernetes/issues/54079 - RBAC for single object
   - https://github.com/kubernetes/kubernetes/blob/master/plugin/pkg/auth/authorizer/rbac/bootstrappolicy/policy.go
   - https://github.com/kubernetes/kubernetes/blob/master/pkg/auth/nodeidentifier/default.go#L37 - uses system:nodes prefix
