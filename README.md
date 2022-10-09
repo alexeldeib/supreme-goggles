@@ -40,6 +40,8 @@ bazel run supreme-goggles # run via bazel
 # or build and execute directly
 bazel build supreme-goggles
 ./bazel-bin/supreme-goggles_/supreme-goggles
+```
+
 ## Requirements
 
 Copied largely from [here](https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/#client-and-serving-certificates).
