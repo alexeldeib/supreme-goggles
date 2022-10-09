@@ -9,17 +9,46 @@ For why you'd want this, see documentation here:
 
 Client certificates for kubelet have a fully automated controller, but serving certs do not.
 
-## Running
+## Prerequisites 
 
 This requires kubelet to run with `--rotate-server-certificates=true`, (currently not set on AKS, for example).
 
 Setting this and restarting kubelet is relatively non disruptive -- you can even delete the serving cert entirely with minimal disruption. Test this in your environment before relying on it in production!
 
+
+## Caveats
+
 Currently there's only a basic binary build and no container image or Kubernetes manifests. If you've done this thing before, feel free to send a pull request.
 
 There are also no tests. We could use some!
 
-We currently use bazel for builds. 
+
+## Build + Run
+
+We currently use bazel for builds. If you've never used bazel, try [bazelisk](https://github.com/bazelbuild/bazelisk).
+It has one dependency, Go.
+
+Install Go
+```sh
+GOLANG_VERSION="go1.19.2"
+# adjust below as appropriate for os/arch, assuming you have bash.
+curl -O "https://dl.google.com/go/${GOLANG_VERSION}.linux-amd64.tar.gz"
+
+echo "unpacking go"
+# these command may require sudo!
+mkdir -p /usr/local/go
+chown -R "$(whoami):$(whoami)" /usr/local/go 
+tar -xvf "${GOLANG_VERSION}.linux-amd64.tar.gz" -C /usr/local
+rm "${GOLANG_VERSION}.linux-amd64.tar.gz"
+```
+
+Install bazelisk
+```sh
+go install github.com/bazelbuild/bazelisk@latest
+export PATH=$PATH:$(go env GOPATH)/bin
+# rename to bazel for convenience, it will invoke as bazel of an arbitrary version
+mv $(go env GOPATH)/bin/bazelisk $(go env GOPATH)/bin/bazel 
+```
 
 Simple build
 ```sh
@@ -42,7 +71,7 @@ bazel build supreme-goggles
 ./bazel-bin/supreme-goggles_/supreme-goggles
 ```
 
-## Requirements
+## Project Requirements
 
 Copied largely from [here](https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/#client-and-serving-certificates).
 
