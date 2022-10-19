@@ -132,3 +132,7 @@ Note that using an exec plugin to request a bootstrap token, the only requiremen
 The fqdn can be injected via e.g. VMSS tags to IMDS in Azure, while the certificate authority can be in custom data or user data (later also accessible via IMDS). This eliminates the need for any other external data for bootstrap.
 
 Note there is a built-in RBAC role for the kubelet-serving approver, even though the approver itself is not built-in (only the signer): system:certificates.k8s.io:kubelet-serving-approver
+
+Note 2: kubeadm has strict validation on token chars + bytes, but I don't see this used elsewhere 
+https://github.com/kubernetes/kubernetes/blob/7dee7c8a6fe121f93c9d6399da6671d09258434b/staging/src/k8s.io/cluster-bootstrap/token/util/helpers.go#L45
+https://github.com/kubernetes/kubernetes/blob/7dee7c8a6fe121f93c9d6399da6671d09258434b/staging/src/k8s.io/cluster-bootstrap/token/api/types.go#L104-L108
