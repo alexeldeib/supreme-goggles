@@ -13,9 +13,10 @@ import (
 
 	"github.com/go-logr/logr"
 	certv1 "k8s.io/api/certificates/v1"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -54,10 +55,12 @@ func main() {
 	kubeclient := kubernetes.NewForConfigOrDie(kubeconfig)
 
 	mgr, err := ctrl.NewManager(kubeconfig, ctrl.Options{
-		Scheme:             scheme,
-		MetricsBindAddress: metricsAddr,
-		Port:               webhookPort,
-		LeaderElection:     false,
+		Scheme:                 scheme,
+		MetricsBindAddress:     metricsAddr,
+		Port:                   webhookPort,
+		LeaderElection:         false,
+		HealthProbeBindAddress: healthAddr,
+		Namespace:              os.Getenv("POD_NS"),
 		// LeaderElectionNamespace: "default",
 		// LeaderElectionID:        "5c4b429e.kubernetes.azure.com",
 	})
@@ -116,9 +119,24 @@ func (r *csrReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 		return reconcile.Result{}, nil
 	}
 
-	if err := r.handle(ctx, &obj); err != nil {
-		r.Log.Error(err, "failed to handle request")
-		return reconcile.Result{}, err
+	if obj.Spec.SignerName == certv1.KubeletServingSignerName {
+		if err := r.handleServerCert(ctx, &obj); err != nil {
+			r.Log.Error(err, "failed to handle server cert request, will not requeue")
+			return reconcile.Result{}, nil
+		}
+	}
+
+	if obj.Spec.SignerName == certv1.KubeAPIServerClientSignerName {
+		if err := r.handleClientCert(ctx, &obj); err != nil {
+			r.Log.Error(err, "failed to handle client cert request")
+			var retryable retryableError
+			if errors.As(err, &retryable) {
+				r.Log.Info("retryable error, will reqeue")
+				return reconcile.Result{}, err
+			}
+			r.Log.Info("terminal error, will not reqeue")
+			return reconcile.Result{}, nil
+		}
 	}
 
 	r.Log.Info("validated successfully, should approve")
@@ -138,14 +156,14 @@ func appendApprovalCondition(csr *certv1.CertificateSigningRequest, message stri
 	for i := range csr.Status.Conditions {
 		if csr.Status.Conditions[i].Type == certv1.CertificateApproved {
 			found = true
-			if csr.Status.Conditions[i].Status != v1.ConditionTrue {
+			if csr.Status.Conditions[i].Status != corev1.ConditionTrue {
 
 			} else {
 				csr.Status.Conditions[i] = certv1.CertificateSigningRequestCondition{
 					Type:    certv1.CertificateApproved,
 					Reason:  "AutoApproved",
 					Message: message,
-					Status:  v1.ConditionTrue,
+					Status:  corev1.ConditionTrue,
 				}
 			}
 			break
@@ -156,22 +174,71 @@ func appendApprovalCondition(csr *certv1.CertificateSigningRequest, message stri
 			Type:    certv1.CertificateApproved,
 			Reason:  "AutoApproved",
 			Message: message,
-			Status:  v1.ConditionTrue,
+			Status:  corev1.ConditionTrue,
 		})
 	}
 }
 
-func (r *csrReconciler) handle(ctx context.Context, csr *certv1.CertificateSigningRequest) error {
+func (r *csrReconciler) handleServerCert(ctx context.Context, csr *certv1.CertificateSigningRequest) error {
 	req, err := parseCSR(csr.Spec.Request)
 	if err != nil {
 		return fmt.Errorf("unable to parse csr %q: %v", csr.Name, err)
 	}
 
-	if err := validate(csr, req); err != nil {
+	if err := validateServerCsr(csr, req); err != nil {
 		return fmt.Errorf("failed to validate csr: %v", err)
 	}
 
 	return nil
+}
+
+func (r *csrReconciler) handleClientCert(ctx context.Context, csr *certv1.CertificateSigningRequest) error {
+	req, err := parseCSR(csr.Spec.Request)
+	if err != nil {
+		return fmt.Errorf("unable to parse csr %q: %v", csr.Name, err)
+	}
+
+	tokenId, err := usernameToToken(csr.Spec.Username)
+	if err != nil {
+		return err
+	}
+
+	var obj corev1.Secret
+	var key = types.NamespacedName{
+		Namespace: csr.ObjectMeta.Namespace,
+		Name:      "bootstrap-token-" + tokenId,
+	}
+
+	if err := r.Get(ctx, key, &obj); err != nil {
+		return &retryableError{
+			error: fmt.Errorf("failed to get bootstrap token %s for csr", tokenId),
+			retry: true,
+		}
+	}
+
+	hostName := obj.Annotations["kubernetes.azure.com/tls-bootstrap-hostname"]
+
+	if err := validateClientCsr(csr, req, hostName); err != nil {
+		return fmt.Errorf("failed to validate csr: %w", err)
+	}
+
+	return nil
+}
+
+func usernameToToken(username string) (string, error) {
+	if !strings.HasPrefix(username, "system:bootstrap:") {
+		return "", fmt.Errorf("client csr should be requested by system:bootstrap:<token_id>, not %s", username)
+	}
+
+	userNameTokens := strings.Split(username, ":")
+	if len(userNameTokens) != 3 {
+		return "", fmt.Errorf("expected csr username %q to have 2 colons and 3 components, actual %d", username, len(userNameTokens))
+	}
+
+	// system:bootstrap:<token_id>
+	tokenId := userNameTokens[2]
+
+	return tokenId, nil
 }
 
 func shouldSkip(csr *certv1.CertificateSigningRequest) bool {
@@ -181,7 +248,7 @@ func shouldSkip(csr *certv1.CertificateSigningRequest) bool {
 	if approved, denied := getCertApprovalCondition(&csr.Status); approved || denied {
 		return true
 	}
-	if certv1.KubeletServingSignerName != csr.Spec.SignerName {
+	if certv1.KubeletServingSignerName != csr.Spec.SignerName && certv1.KubeAPIServerClientSignerName != csr.Spec.SignerName {
 		return true
 	}
 	return false
@@ -202,11 +269,13 @@ func getCertApprovalCondition(status *certv1.CertificateSigningRequestStatus) (a
 // Copied from https://github.com/kubernetes/kubernetes/blob/575031b68f5d52e541de6418a59a832252244486/pkg/apis/certificates/helpers.go#L43-L51
 // Avoid importing internal k8s deps.
 var (
-	errOrganizationNotSystemNodesErr = fmt.Errorf("subject organization is not system:nodes")
-	errCommonNameNotSystemNode       = fmt.Errorf("subject common name does not begin with 'system:node:'")
-	errDnsOrIPSANRequiredErr         = fmt.Errorf("DNS or IP subjectAltName is required")
-	errEmailSANNotAllowedErr         = fmt.Errorf("email subjectAltNames are not allowed")
-	errUriSANNotAllowedErr           = fmt.Errorf("URI subjectAltNames are not allowed")
+	errOrganizationNotSystemNodes = fmt.Errorf("subject organization is not system:nodes")
+	errCommonNameNotSystemNode    = fmt.Errorf("subject common name does not begin with 'system:node:'")
+	errDnsOrIPSANRequired         = fmt.Errorf("DNS or IP subjectAltName is required")
+	errEmailSANNotAllowed         = fmt.Errorf("email subjectAltNames are not allowed")
+	errUriSANNotAllowed           = fmt.Errorf("URI subjectAltNames are not allowed")
+	errDnsSANNotAllowed           = fmt.Errorf("DNS subjectAltNames are not allowed")
+	errIpSANNotAllowed            = fmt.Errorf("IP subjectAltNames are not allowed")
 )
 
 // Copied from https://github.com/kubernetes/kubernetes/blob/5835544ca568b757a8ecae5c153f317e5736700e/pkg/apis/certificates/v1/helpers.go#L26
@@ -227,7 +296,7 @@ func parseCSR(pemBytes []byte) (*x509.CertificateRequest, error) {
 	return csr, nil
 }
 
-func validate(csr *certv1.CertificateSigningRequest, req *x509.CertificateRequest) error {
+func validateServerCsr(csr *certv1.CertificateSigningRequest, req *x509.CertificateRequest) error {
 	// enforce username of client requesting is the node common name
 	if csr.Spec.Username != req.Subject.CommonName {
 		return fmt.Errorf("csr username %q does not match x509 common name %q", csr.Spec.Username, req.Subject.CommonName)
@@ -238,12 +307,12 @@ func validate(csr *certv1.CertificateSigningRequest, req *x509.CertificateReques
 	}
 
 	if !reflect.DeepEqual([]string{"system:nodes"}, req.Subject.Organization) {
-		return errOrganizationNotSystemNodesErr
+		return errOrganizationNotSystemNodes
 	}
 
 	// at least one of dnsNames or ipAddresses must be specified
 	if len(req.DNSNames) == 0 && len(req.IPAddresses) == 0 {
-		return errDnsOrIPSANRequiredErr
+		return errDnsOrIPSANRequired
 	}
 
 	userNameTokens := strings.Split(csr.Spec.Username, ":")
@@ -268,21 +337,69 @@ func validate(csr *certv1.CertificateSigningRequest, req *x509.CertificateReques
 	}
 
 	if len(req.EmailAddresses) > 0 {
-		return errEmailSANNotAllowedErr
+		return errEmailSANNotAllowed
 	}
 	if len(req.URIs) > 0 {
-		return errUriSANNotAllowedErr
+		return errUriSANNotAllowed
 	}
 
-	if !hasExactUsages(csr) {
+	if !hasExactServerUsages(csr) {
 		return fmt.Errorf("usages did not match %v", csr.Spec.Usages)
 	}
 
 	return nil
 }
 
-func hasExactUsages(csr *certv1.CertificateSigningRequest) bool {
-	usageMap := kubeletServingRequiredUsages()
+func validateClientCsr(csr *certv1.CertificateSigningRequest, req *x509.CertificateRequest, validatedHostName string) error {
+	// copy pasta from k/k
+	if !reflect.DeepEqual([]string{"system:nodes"}, req.Subject.Organization) {
+		return errOrganizationNotSystemNodes
+	}
+
+	if len(req.DNSNames) > 0 {
+		return errDnsSANNotAllowed
+	}
+	if len(req.EmailAddresses) > 0 {
+		return errEmailSANNotAllowed
+	}
+	if len(req.IPAddresses) > 0 {
+		return errIpSANNotAllowed
+	}
+	if len(req.URIs) > 0 {
+		return errUriSANNotAllowed
+	}
+
+	if !strings.HasPrefix(req.Subject.CommonName, "system:node:") {
+		return errCommonNameNotSystemNode
+	}
+
+	commonNameTokens := strings.Split(req.Subject.CommonName, ":")
+	if len(commonNameTokens) != 3 {
+		return fmt.Errorf("expected csr common name %q to have 2 colons and 3 components, actual %d", req.Subject.CommonName, len(commonNameTokens))
+	}
+
+	// system:node:<hostName>
+	commonName := commonNameTokens[2]
+
+	// enforce bootstrap token requesting this cert matches hostname on bootstrap token secret
+	if validatedHostName != commonName {
+		return fmt.Errorf("requested common name %q does not match allowed hostname %q", commonName, validatedHostName)
+	}
+
+	// if allowOmittingUsageKeyEncipherment {
+	// 	if !kubeletClientRequiredUsages.Equal(usages) && !kubeletClientRequiredUsagesNoRSA.Equal(usages) {
+	// 		return fmt.Errorf("usages did not match %v", kubeletClientRequiredUsages.List())
+	// 	}
+	// } else {
+	if !hasExactClientUsages(csr) {
+		return fmt.Errorf("usages did not match %v", csr.Spec.Usages)
+	}
+	// }
+
+	return nil
+}
+
+func hasExactUsages(csr *certv1.CertificateSigningRequest, usageMap map[certv1.KeyUsage]struct{}) bool {
 	if len(usageMap) != len(csr.Spec.Usages) {
 		return false
 	}
@@ -296,10 +413,35 @@ func hasExactUsages(csr *certv1.CertificateSigningRequest) bool {
 	return true
 }
 
+func hasExactServerUsages(csr *certv1.CertificateSigningRequest) bool {
+	return hasExactUsages(csr, kubeletServingRequiredUsages())
+}
+
+func hasExactClientUsages(csr *certv1.CertificateSigningRequest) bool {
+	return hasExactUsages(csr, kubeletClientRequiredUsages())
+}
+
 func kubeletServingRequiredUsages() map[certv1.KeyUsage]struct{} {
 	return map[certv1.KeyUsage]struct{}{
 		certv1.UsageDigitalSignature: {},
 		certv1.UsageKeyEncipherment:  {},
 		certv1.UsageServerAuth:       {},
 	}
+}
+
+func kubeletClientRequiredUsages() map[certv1.KeyUsage]struct{} {
+	return map[certv1.KeyUsage]struct{}{
+		certv1.UsageDigitalSignature: {},
+		certv1.UsageKeyEncipherment:  {},
+		certv1.UsageClientAuth:       {},
+	}
+}
+
+type retryableError struct {
+	error
+	retry bool
+}
+
+func (r *retryableError) Retryable() bool {
+	return r.retry
 }
