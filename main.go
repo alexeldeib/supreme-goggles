@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"reflect"
 	"strings"
@@ -19,9 +20,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -51,10 +54,36 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
-	kubeconfig := ctrl.GetConfigOrDie()
-	kubeclient := kubernetes.NewForConfigOrDie(kubeconfig)
+	kubeconfig, err := config.GetConfig()
+	if err != nil {
+		log.Fatalf("failed to initialize kubernetes client: %v", err)
+	}
 
-	mgr, err := ctrl.NewManager(kubeconfig, ctrl.Options{
+	clientset, err := kubernetes.NewForConfig(kubeconfig)
+	if err != nil {
+		log.Fatalf("failed to create clientset: %v", err)
+	}
+
+	kcSecret, err := clientset.CoreV1().Secrets(os.Getenv("POD_NS")).Get(context.Background(), "kubeconfig-file", metav1.GetOptions{})
+	if err != nil {
+		log.Fatalf("getting kubeconfig secret: %s", err)
+	}
+
+	if kcSecret.Data == nil {
+		log.Fatalf("kubeconfig secret is empty")
+	}
+
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(kcSecret.Data["kubeconfig.yaml"])
+	if err != nil {
+		log.Fatalf("parsing overlay kubeconfig: %s", err)
+	}
+
+	overlay, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		log.Fatalf("creating overlay kube client: %s", err)
+	}
+
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
 		MetricsBindAddress:     metricsAddr,
 		Port:                   webhookPort,
@@ -83,7 +112,7 @@ func main() {
 	err = builder.
 		ControllerManagedBy(mgr).
 		For(&certv1.CertificateSigningRequest{}).
-		Complete(&csrReconciler{Kubeclient: kubeclient, Log: ctrl.Log.WithName("csrcontroller")})
+		Complete(&csrReconciler{Kubeclient: overlay, Log: ctrl.Log.WithName("csrcontroller")})
 	if err != nil {
 		setupLog.Error(err, "could not create controller")
 		os.Exit(1)
